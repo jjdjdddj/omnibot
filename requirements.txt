@@ -1,0 +1,6 @@
+discord.py
+aiohttp
+dnspython
+python-whois
+pillow
+phonenumbers

@@ -26,7 +26,7 @@ from PIL.ExifTags import TAGS, GPSTAGS
 try: import whois as whois_lib
 except Exception: whois_lib=None
 
-TOKEN=os.getenv("DISCORD_TOKEN","PASTE"); GUILD_ID=int(os.getenv("GUILD_ID","0") or "0")
+TOKEN=os.getenv("MTU1ODY2ODc2NjczNTI0MTIyOA.Ggw9Df.UMcbK6pvdObBQZk6mR1mZMexClSLhWnwPrVh4k","PASTE"); GUILD_ID=int(os.getenv("GUILD_ID","0") or "0")
 WEB_HOST=os.getenv("WEB_HOST","0.0.0.0"); WEB_PORT=int(os.getenv("PORT") or os.getenv("WEB_PORT","8080"))
 PUBLIC_URL=os.getenv("PUBLIC_URL","http://127.0.0.1:8080").rstrip("/")
 DATA_FILE=os.getenv("DATA_FILE","grabs.json"); HIBP_KEY=os.getenv("HIBP_API_KEY","")

